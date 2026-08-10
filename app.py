@@ -58,7 +58,6 @@ try:
 except sqlite3.OperationalError:
     pass
 
-# Insertar configuración por defecto de forma segura
 try:
     c.execute("INSERT OR IGNORE INTO configuracion (id, capital_inicial, color_ganancia, color_perdida) VALUES (1, 50000.0, '#2ec4b6', '#e63946')")
 except sqlite3.OperationalError:
@@ -209,7 +208,7 @@ with tab_cal:
                         unsafe_allow_html=True
                     )
 
-# --- TAB 3: REGISTRO E INSPECCIÓN ---
+# --- TAB 3: REGISTRO E INSPECCIÓN (CON EDICIÓN Y ELIMINACIÓN) ---
 with tab_reg:
     c_reg, c_insp = st.columns([1.2, 1.8])
     
@@ -284,7 +283,7 @@ with tab_reg:
             st.rerun()
 
     with c_insp:
-        st.subheader("🔍 Detalle del Día")
+        st.subheader("🔍 Detalle e Inspección de Trades")
         fecha_consulta = st.date_input("Seleccionar fecha", date.today(), key="consulta_tab")
         f_consulta_str = fecha_consulta.strftime("%Y-%m-%d")
 
@@ -293,8 +292,19 @@ with tab_reg:
 
         if registros:
             for r in registros:
-                st.markdown(f"### Trade #{r[0]} - PnL: **${r[2]:,.2f}**")
-                st.write(f"**Trades tomados:** {r[3]}")
+                trade_id = r[0]
+                col_head1, col_head2 = st.columns([0.75, 0.25])
+                
+                col_head1.markdown(f"### Trade #{trade_id} - PnL: **${r[2]:,.2f}**")
+                
+                # BOTÓN PARA ELIMINAR EL TRADE
+                if col_head2.button("🗑️ Eliminar Trade", key=f"btn_del_trade_{trade_id}"):
+                    c.execute("DELETE FROM trades WHERE id = ?", (trade_id,))
+                    conn.commit()
+                    st.success(f"🗑️ Trade #{trade_id} eliminado con éxito.")
+                    st.rerun()
+
+                st.write(f"**Número de trades:** {r[3]}")
                 
                 confirmaciones_hechas = r[4].split(" | ") if r[4] else []
                 st.write(f"**Confirmaciones cumplidas ({len(confirmaciones_hechas)}):**")
@@ -307,17 +317,49 @@ with tab_reg:
                 
                 col_img1, col_img2 = st.columns(2)
                 
-                if r[5]:
-                    if r[5].startswith("http"):
-                        col_img1.image(r[5], caption="Antes del Trade (Link TradingView)", use_container_width=True)
-                    elif os.path.exists(r[5]):
-                        col_img1.image(r[5], caption="Antes del Trade", use_container_width=True)
+                # MUESTRA O REEMPLAZO DE FOTO ANTES
+                with col_img1:
+                    st.markdown("**Captura ANTES:**")
+                    if r[5]:
+                        if r[5].startswith("http"):
+                            st.image(r[5], caption="Antes (Link)", use_container_width=True)
+                        elif os.path.exists(r[5]):
+                            st.image(r[5], caption="Antes (Archivo)", use_container_width=True)
+                    else:
+                        st.caption("Sin captura cargada.")
+                    
+                    # Opción para actualizar/remplazar foto antes
+                    new_file_antes = st.file_uploader(f"Reemplazar Foto ANTES (Trade #{trade_id})", type=["png", "jpg", "jpeg"], key=f"up_antes_{trade_id}")
+                    if new_file_antes:
+                        new_path_antes = os.path.join(OS_IMG_DIR, f"{f_consulta_str}_antes_trade{trade_id}_{new_file_antes.name}")
+                        with open(new_path_antes, "wb") as f:
+                            f.write(new_file_antes.getbuffer())
+                        c.execute("UPDATE trades SET foto_antes = ? WHERE id = ?", (new_path_antes, trade_id))
+                        conn.commit()
+                        st.success("Foto ANTES actualizada.")
+                        st.rerun()
 
-                if r[6]:
-                    if r[6].startswith("http"):
-                        col_img2.image(r[6], caption="Después del Trade (Link TradingView)", use_container_width=True)
-                    elif os.path.exists(r[6]):
-                        col_img2.image(r[6], caption="Después del Trade", use_container_width=True)
+                # MUESTRA O REEMPLAZO DE FOTO DESPUÉS
+                with col_img2:
+                    st.markdown("**Captura DESPUÉS:**")
+                    if r[6]:
+                        if r[6].startswith("http"):
+                            st.image(r[6], caption="Después (Link)", use_container_width=True)
+                        elif os.path.exists(r[6]):
+                            st.image(r[6], caption="Después (Archivo)", use_container_width=True)
+                    else:
+                        st.caption("Sin captura cargada.")
+                    
+                    # Opción para actualizar/remplazar foto después
+                    new_file_despues = st.file_uploader(f"Reemplazar Foto DESPUÉS (Trade #{trade_id})", type=["png", "jpg", "jpeg"], key=f"up_despues_{trade_id}")
+                    if new_file_despues:
+                        new_path_despues = os.path.join(OS_IMG_DIR, f"{f_consulta_str}_despues_trade{trade_id}_{new_file_despues.name}")
+                        with open(new_path_despues, "wb") as f:
+                            f.write(new_file_despues.getbuffer())
+                        c.execute("UPDATE trades SET foto_despues = ? WHERE id = ?", (new_path_despues, trade_id))
+                        conn.commit()
+                        st.success("Foto DESPUÉS actualizada.")
+                        st.rerun()
 
                 st.divider()
         else:
