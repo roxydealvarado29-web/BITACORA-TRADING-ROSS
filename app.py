@@ -1,72 +1,22 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
-import os
 import calendar
 from datetime import datetime, date
 
 # Configuración de la pantalla
 st.set_page_config(page_title="Trading Journal Pro", layout="wide", initial_sidebar_state="expanded")
 
-# Carpeta para guardar las imágenes de los trades
-OS_IMG_DIR = "imagenes_trades"
-if not os.path.exists(OS_IMG_DIR):
-    os.makedirs(OS_IMG_DIR)
+# ID de tu hoja de Google Sheets
+SPREADSHEET_ID = "1xRm31VV1cyAXLrj-WbjKEN5yL_Dm_l4xBp5sIKT-eoU"
+CSV_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/export?format=csv"
 
-# Conexión a la base de datos
-conn = sqlite3.connect("trading_journal.db", check_same_thread=False)
-c = conn.cursor()
+# Configuración de la cuenta por defecto
+CAPITAL_INICIAL = 50000.0
+COLOR_GANANCIA = "#2ec4b6"
+COLOR_PERDIDA = "#e63946"
 
-# Crear tablas
-c.execute('''
-    CREATE TABLE IF NOT EXISTS trades (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        fecha TEXT,
-        pnl REAL,
-        num_trades INTEGER,
-        confirmaciones TEXT,
-        foto_antes TEXT,
-        foto_despues TEXT,
-        notas TEXT
-    )
-''')
-
-c.execute('''
-    CREATE TABLE IF NOT EXISTS checklist_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        texto TEXT NOT NULL
-    )
-''')
-
-c.execute('''
-    CREATE TABLE IF NOT EXISTS configuracion (
-        id INTEGER PRIMARY KEY,
-        capital_inicial REAL DEFAULT 50000.0,
-        color_ganancia TEXT DEFAULT '#2ec4b6',
-        color_perdida TEXT DEFAULT '#e63946'
-    )
-''')
-
-# Garantizar compatibilidad con columnas de color
-try:
-    c.execute("ALTER TABLE configuracion ADD COLUMN color_ganancia TEXT DEFAULT '#2ec4b6'")
-except sqlite3.OperationalError:
-    pass
-
-try:
-    c.execute("ALTER TABLE configuracion ADD COLUMN color_perdida TEXT DEFAULT '#e63946'")
-except sqlite3.OperationalError:
-    pass
-
-try:
-    c.execute("INSERT OR IGNORE INTO configuracion (id, capital_inicial, color_ganancia, color_perdida) VALUES (1, 50000.0, '#2ec4b6', '#e63946')")
-except sqlite3.OperationalError:
-    c.execute("INSERT OR IGNORE INTO configuracion (id, capital_inicial) VALUES (1, 50000.0)")
-
-conn.commit()
-
-# --- LISTA DE CONFIRMACIONES PREDETERMINADAS ---
-reglas_defecto = [
+# Lista de confirmaciones predeterminadas
+REGLAS_DEFECTO = [
     "Dirección",
     "CRT 1H, 3H, 4H, 1D",
     "iFVG",
@@ -78,27 +28,30 @@ reglas_defecto = [
     "NO 🥺​"
 ]
 
-# Reiniciar reglas por defecto si la base de datos no contiene items
-c.execute("SELECT COUNT(*) FROM checklist_items")
-if c.fetchone()[0] == 0:
-    for r in reglas_defecto:
-        c.execute("INSERT INTO checklist_items (texto) VALUES (?)", (r,))
-    conn.commit()
+# Inicializar sesión local si no existe
+if "checklist_custom" not in st.session_state:
+    st.session_state["checklist_custom"] = REGLAS_DEFECTO.copy()
 
-# --- DATOS GENERALES Y MÉTRICAS ---
-df_all = pd.read_sql_query("SELECT * FROM trades ORDER BY fecha ASC", conn)
-c.execute("SELECT capital_inicial, color_ganancia, color_perdida FROM configuracion WHERE id = 1")
-cfg = c.fetchone()
+# Función para cargar datos desde Google Sheets
+@st.cache_data(ttl=5)
+def cargar_datos_sheets():
+    try:
+        df = pd.read_csv(CSV_URL)
+        # Asegurar tipos de datos correctos
+        if not df.empty and "fecha" in df.columns:
+            df["pnl"] = pd.to_numeric(df["pnl"], errors="coerce").fillna(0.0)
+            df["num_trades"] = pd.to_numeric(df["num_trades"], errors="coerce").fillna(1).astype(int)
+            df["fecha"] = df["fecha"].astype(str)
+            return df
+    except Exception:
+        pass
+    return pd.DataFrame(columns=["id", "fecha", "pnl", "num_trades", "confirmaciones", "foto_antes", "foto_despues", "notas"])
 
-if cfg:
-    capital_inicial = cfg[0] if cfg[0] is not None else 50000.0
-    color_ganancia = cfg[1] if (len(cfg) > 1 and cfg[1] is not None) else '#2ec4b6'
-    color_perdida = cfg[2] if (len(cfg) > 2 and cfg[2] is not None) else '#e63946'
-else:
-    capital_inicial, color_ganancia, color_perdida = 50000.0, '#2ec4b6', '#e63946'
+df_all = cargar_datos_sheets()
 
+# MÉRTRICAS GENERALES
 total_pnl = df_all['pnl'].sum() if not df_all.empty else 0.0
-balance_final = capital_inicial + total_pnl
+balance_final = CAPITAL_INICIAL + total_pnl
 total_trades = df_all['num_trades'].sum() if not df_all.empty else 0
 
 wins = df_all[df_all['pnl'] > 0]
@@ -117,8 +70,8 @@ profit_factor = (wins['pnl'].sum() / abs(losses['pnl'].sum())) if not losses.emp
 st.title("🚀 Trading Journal Pro")
 
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("Capital Inicial", f"${capital_inicial:,.2f}")
-m2.metric("Net Profit / Loss", f"${total_pnl:,.2f}", delta=f"{total_pnl:,.2f}")
+m1.metric("Capital Inicial", f"${CAPITAL_INICIAL:,.2f}")
+m2.metric("Net Profit / Loss", f"${total_pnl:,.2f}", delta=f"${total_pnl:,.2f}")
 m3.metric("Balance Final", f"${balance_final:,.2f}")
 m4.metric("Win Rate", f"{win_rate:.1f}%")
 
@@ -152,8 +105,9 @@ with tab_dash:
     with col_stat2:
         st.markdown("### 📊 Curva de Rendimiento Acumulado")
         if not df_all.empty:
-            df_all['pnl_acumulado'] = df_all['pnl'].cumsum() + capital_inicial
-            st.line_chart(df_all.set_index('fecha')['pnl_acumulado'])
+            df_plot = df_all.copy()
+            df_plot['pnl_acumulado'] = df_plot['pnl'].cumsum() + CAPITAL_INICIAL
+            st.line_chart(df_plot.set_index('fecha')['pnl_acumulado'])
         else:
             st.info("Registra trades para visualizar la curva de rendimiento.")
 
@@ -164,9 +118,11 @@ with tab_cal:
     mes_sel = col_m.selectbox("Mes", list(range(1, 13)), index=datetime.now().month - 1)
     anio_sel = col_y.number_input("Año", value=datetime.now().year)
 
-    query = "SELECT fecha, SUM(pnl) as total_pnl, SUM(num_trades) as total_trades FROM trades WHERE fecha LIKE ? GROUP BY fecha"
-    df_trades_m = pd.read_sql_query(query, conn, params=(f"{anio_sel}-{mes_sel:02d}-%",))
-    dict_trades = df_trades_m.set_index('fecha').to_dict(orient='index') if not df_trades_m.empty else {}
+    if not df_all.empty:
+        df_filtered = df_all[df_all['fecha'].str.startswith(f"{anio_sel}-{mes_sel:02d}")]
+        dict_trades = df_filtered.groupby('fecha').agg({'pnl': 'sum', 'num_trades': 'sum'}).to_dict(orient='index')
+    else:
+        dict_trades = {}
 
     cal = calendar.monthcalendar(int(anio_sel), int(mes_sel))
     dias_semana = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
@@ -183,10 +139,10 @@ with tab_cal:
             else:
                 f_key = f"{anio_sel}-{mes_sel:02d}-{dia:02d}"
                 if f_key in dict_trades:
-                    pnl_val = dict_trades[f_key]['total_pnl']
-                    cnt_trades = dict_trades[f_key]['total_trades']
+                    pnl_val = dict_trades[f_key]['pnl']
+                    cnt_trades = dict_trades[f_key]['num_trades']
                     
-                    selected_color = color_ganancia if pnl_val >= 0 else color_perdida
+                    selected_color = COLOR_GANANCIA if pnl_val >= 0 else COLOR_PERDIDA
                     
                     cols[i].markdown(
                         f"""
@@ -208,7 +164,7 @@ with tab_cal:
                         unsafe_allow_html=True
                     )
 
-# --- TAB 3: REGISTRO E INSPECCIÓN (CON EDICIÓN Y ELIMINACIÓN) ---
+# --- TAB 3: REGISTRO E INSPECCIÓN ---
 with tab_reg:
     c_reg, c_insp = st.columns([1.2, 1.8])
     
@@ -217,7 +173,6 @@ with tab_reg:
         fecha_sel = st.date_input("Fecha", date.today())
         fecha_str = fecha_sel.strftime("%Y-%m-%d")
 
-        # --- SECTOR DE REGISTRO RÁPIDO DE PNL ---
         st.markdown("**💰 PnL del Día ($)**")
         col_tipo, col_monto = st.columns([1, 2])
         
@@ -237,140 +192,79 @@ with tab_reg:
         trades_count = st.number_input("Número de trades", min_value=1, value=1)
 
         st.markdown("**📋 Checklist de Confirmaciones**")
-        c.execute("SELECT texto FROM checklist_items")
-        reglas_disponibles = [r[0] for r in c.fetchall()]
-
         respuestas_checklist = []
-        for idx, regla in enumerate(reglas_disponibles):
+        for idx, regla in enumerate(st.session_state["checklist_custom"]):
             if st.checkbox(regla, key=f"chk_tab_{idx}"):
                 respuestas_checklist.append(regla)
 
         st.markdown("**🖼️ Captura ANTES del Trade**")
         url_antes = st.text_input("Pegar Link TradingView (ANTES):", placeholder="https://www.tradingview.com/x/...")
-        file_antes = st.file_uploader("O subir archivo de imagen (ANTES)", type=["png", "jpg", "jpeg"], key="tab_antes")
 
         st.markdown("**🖼️ Captura DESPUÉS del Trade**")
         url_despues = st.text_input("Pegar Link TradingView (DESPUÉS):", placeholder="https://www.tradingview.com/x/...")
-        file_despues = st.file_uploader("O subir archivo de imagen (DESPUÉS)", type=["png", "jpg", "jpeg"], key="tab_despues")
 
         notas_input = st.text_area("Notas / Lecciones del día")
 
-        if st.button("💾 Guardar en Bitácora", use_container_width=True):
-            path_antes = ""
-            if url_antes.strip():
-                path_antes = url_antes.strip()
-            elif file_antes:
-                path_antes = os.path.join(OS_IMG_DIR, f"{fecha_str}_antes_{file_antes.name}")
-                with open(path_antes, "wb") as f:
-                    f.write(file_antes.getbuffer())
-
-            path_despues = ""
-            if url_despues.strip():
-                path_despues = url_despues.strip()
-            elif file_despues:
-                path_despues = os.path.join(OS_IMG_DIR, f"{fecha_str}_despues_{file_despues.name}")
-                with open(path_despues, "wb") as f:
-                    f.write(file_despues.getbuffer())
-
-            confirmaciones_str = " | ".join(respuestas_checklist)
-
-            c.execute('''
-                INSERT INTO trades (fecha, pnl, num_trades, confirmaciones, foto_antes, foto_despues, notas)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (fecha_str, pnl_input, trades_count, confirmaciones_str, path_antes, path_despues, notas_input))
-            conn.commit()
-            st.success("✅ Trade registrado correctamente.")
-            st.rerun()
+        st.info("💡 Para asegurar que tus datos se guarden de forma permanente en Google Sheets, abre el enlace del archivo directamente para agregar las filas:")
+        st.markdown(f"[👉 Abrir tu Google Sheets para guardar registros](https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit)")
 
     with c_insp:
         st.subheader("🔍 Detalle e Inspección de Trades")
         fecha_consulta = st.date_input("Seleccionar fecha", date.today(), key="consulta_tab")
         f_consulta_str = fecha_consulta.strftime("%Y-%m-%d")
 
-        c.execute("SELECT id, fecha, pnl, num_trades, confirmaciones, foto_antes, foto_despues, notas FROM trades WHERE fecha = ?", (f_consulta_str,))
-        registros = c.fetchall()
+        if not df_all.empty:
+            registros = df_all[df_all['fecha'] == f_consulta_str]
+        else:
+            registros = pd.DataFrame()
 
-        if registros:
-            for r in registros:
-                trade_id = r[0]
-                col_head1, col_head2 = st.columns([0.75, 0.25])
+        if not registros.empty:
+            for idx, r in registros.iterrows():
+                trade_id = r.get('id', idx + 1)
+                pnl_val = r.get('pnl', 0.0)
                 
-                col_head1.markdown(f"### Trade #{trade_id} - PnL: **${r[2]:,.2f}**")
+                st.markdown(f"### Trade #{trade_id} - PnL: **${pnl_val:,.2f}**")
+                st.write(f"**Número de trades:** {r.get('num_trades', 1)}")
                 
-                # BOTÓN PARA ELIMINAR EL TRADE
-                if col_head2.button("🗑️ Eliminar Trade", key=f"btn_del_trade_{trade_id}"):
-                    c.execute("DELETE FROM trades WHERE id = ?", (trade_id,))
-                    conn.commit()
-                    st.success(f"🗑️ Trade #{trade_id} eliminado con éxito.")
-                    st.rerun()
-
-                st.write(f"**Número de trades:** {r[3]}")
-                
-                confirmaciones_hechas = r[4].split(" | ") if r[4] else []
+                conf_str = str(r.get('confirmaciones', ''))
+                confirmaciones_hechas = conf_str.split(" | ") if conf_str and conf_str != 'nan' else []
                 st.write(f"**Confirmaciones cumplidas ({len(confirmaciones_hechas)}):**")
                 for conf in confirmaciones_hechas:
                     if conf:
                         st.caption(f"✓ {conf}")
 
-                if r[7]:
-                    st.info(f"**Notas:** {r[7]}")
+                notas_val = str(r.get('notas', ''))
+                if notas_val and notas_val != 'nan':
+                    st.info(f"**Notas:** {notas_val}")
                 
                 col_img1, col_img2 = st.columns(2)
                 
-                # MUESTRA O REEMPLAZO DE FOTO ANTES
                 with col_img1:
                     st.markdown("**Captura ANTES:**")
-                    if r[5]:
-                        if r[5].startswith("http"):
-                            st.image(r[5], caption="Antes (Link)", use_container_width=True)
-                        elif os.path.exists(r[5]):
-                            st.image(r[5], caption="Antes (Archivo)", use_container_width=True)
+                    link_antes = str(r.get('foto_antes', ''))
+                    if link_antes and link_antes.startswith("http"):
+                        st.image(link_antes, caption="Antes", use_container_width=True)
                     else:
                         st.caption("Sin captura cargada.")
-                    
-                    # Opción para actualizar/remplazar foto antes
-                    new_file_antes = st.file_uploader(f"Reemplazar Foto ANTES (Trade #{trade_id})", type=["png", "jpg", "jpeg"], key=f"up_antes_{trade_id}")
-                    if new_file_antes:
-                        new_path_antes = os.path.join(OS_IMG_DIR, f"{f_consulta_str}_antes_trade{trade_id}_{new_file_antes.name}")
-                        with open(new_path_antes, "wb") as f:
-                            f.write(new_file_antes.getbuffer())
-                        c.execute("UPDATE trades SET foto_antes = ? WHERE id = ?", (new_path_antes, trade_id))
-                        conn.commit()
-                        st.success("Foto ANTES actualizada.")
-                        st.rerun()
 
-                # MUESTRA O REEMPLAZO DE FOTO DESPUÉS
                 with col_img2:
                     st.markdown("**Captura DESPUÉS:**")
-                    if r[6]:
-                        if r[6].startswith("http"):
-                            st.image(r[6], caption="Después (Link)", use_container_width=True)
-                        elif os.path.exists(r[6]):
-                            st.image(r[6], caption="Después (Archivo)", use_container_width=True)
+                    link_despues = str(r.get('foto_despues', ''))
+                    if link_despues and link_despues.startswith("http"):
+                        st.image(link_despues, caption="Después", use_container_width=True)
                     else:
                         st.caption("Sin captura cargada.")
-                    
-                    # Opción para actualizar/remplazar foto después
-                    new_file_despues = st.file_uploader(f"Reemplazar Foto DESPUÉS (Trade #{trade_id})", type=["png", "jpg", "jpeg"], key=f"up_despues_{trade_id}")
-                    if new_file_despues:
-                        new_path_despues = os.path.join(OS_IMG_DIR, f"{f_consulta_str}_despues_trade{trade_id}_{new_file_despues.name}")
-                        with open(new_path_despues, "wb") as f:
-                            f.write(new_file_despues.getbuffer())
-                        c.execute("UPDATE trades SET foto_despues = ? WHERE id = ?", (new_path_despues, trade_id))
-                        conn.commit()
-                        st.success("Foto DESPUÉS actualizada.")
-                        st.rerun()
 
                 st.divider()
         else:
             st.warning("No hay registros en esta fecha.")
 
-# --- TAB 4: BALANZAS 2.0 (CON LÓGICA DE COBERTURA Y PAGO NETO VINCULADA) ---
+# --- TAB 4: BALANZAS 2.0 ---
 with tab_bal:
     st.subheader("⚖️ Hoja Balanzas 2.0 (Calculadora de Cobertura Lucid / Exness)")
     st.caption("Los valores de las tablas se recalculan automáticamente en cadena cuando modificas los parámetros de entrada.")
 
-    # 1. PARÁMETROS DE ENTRADA EDITABLES
+    # PARÁMETROS EDITABLES
     st.markdown("### 🎛️ Parámetros de Entrada Editables")
     p1, p2, p3, p4 = st.columns(4)
     costo_lucid = p1.number_input("Costo Cuenta Lucid ($)", value=106.0, step=5.0)
@@ -383,31 +277,26 @@ with tab_bal:
     req2 = p6.number_input("Requisito 2 Fase ($)", value=1500.0, step=100.0)
     rr_ratio = p7.number_input("Ratio RR por Tiro", value=0.75, step=0.05, format="%.2f")
 
-    # 2. CÁLCULOS MATEMÁTICOS VINCULADOS EN CADENA
+    # CÁLCULOS EN CADENA
     drawdown_val = tam_challenge * drawdown_pct
     total_target = req1 + req2
     
-    # FASE 1
     riesgo_fase1 = costo_lucid * rr_ratio
     factor_fase1 = (costo_lucid / riesgo_fase1) if riesgo_fase1 > 0 else 0
     riesgo_max_dd1 = drawdown_val * rr_ratio
     pct_riesgo_tiro1 = (req1 / tam_challenge) if tam_challenge > 0 else 0
 
-    # FASE 2
     gasto_fase1 = riesgo_fase1
     total_gasto_fase2 = gasto_fase1 + costo_lucid
     riesgo_fase2 = total_gasto_fase2 * rr_ratio
-    factor_fase2 = (costo_lucid / riesgo_fase1) if riesgo_fase1 > 0 else 0
     riesgo_max_dd2 = drawdown_val * rr_ratio
 
-    # FONDEADO
     total_gasto_exness_acum = total_gasto_fase2 + riesgo_fase2
     meta_1a2 = drawdown_val * 2
     colchon_974 = total_gasto_exness_acum * 3
 
     st.divider()
 
-    # --- TABLA SUPERIOR ENCABEZADO ---
     st.markdown("### 🟢 ENCABEZADO FUTUROS")
     df_top = pd.DataFrame([{
         "COSTO CUENTA LUCID": f"${costo_lucid:,.2f}",
@@ -424,7 +313,6 @@ with tab_bal:
 
     st.divider()
 
-    # --- SECCIÓN PRIMERA FASE 1 ---
     st.markdown("### 🔹 PRIMERA FASE 1")
     df_fase1_show = pd.DataFrame([
         {"Base ($)": f"${costo_lucid:,.2f}", "RR": f"{rr_ratio:.2f}", "Riesgo por Tiro ($)": f"${riesgo_fase1:,.2f}", "Factor / Pct": f"{factor_fase1:.3f}", "Descripción": "Porcentaje de riesgo por tiro"},
@@ -434,7 +322,6 @@ with tab_bal:
 
     st.divider()
 
-    # --- SECCIÓN SEGUNDA FASE 2 ---
     st.markdown("### 🔹 SEGUNDA FASE 2")
     st.caption("📌 *Se suma la pérdida del primer trade más la cuenta de fondeo*")
     
@@ -447,7 +334,6 @@ with tab_bal:
 
     st.divider()
 
-    # --- SECCIÓN FONDEADO ---
     st.markdown("### 🔹 FONDEADO")
     df_fondeado_show = pd.DataFrame([
         {"Concepto Principal": "Tamaño Cuenta Fondeada", "Monto 1 ($)": f"${tam_challenge:,.2f}", "Concepto Secundario": "Gasto Acumulado Exness", "Monto 2 ($)": f"${total_gasto_exness_acum:,.2f}"},
@@ -458,7 +344,6 @@ with tab_bal:
 
     st.divider()
 
-    # --- SECCIÓN COLCHÓN, COBERTURA Y REPARTO NETO ---
     st.markdown(f"### 🟡 UNA VEZ SE HAGA EL COLCHÓN SE DIVIDE LOS ${colchon_974:,.2f} EN 20 TRADES")
     
     c_stop1, c_stop2 = st.columns(2)
@@ -480,11 +365,10 @@ with tab_bal:
 
     df_colchon_show = pd.DataFrame([
         {"Concepto": "MÁXIMO STOP LUCID", "Monto ($)": f"${max_stop_profit:,.2f}", "Trades": f"{num_trades_profit} TRADES", "Subtotal ($)": f"${subtotal_profit:,.2f}", "Resultado": "TOTAL PROFIT LUCID", "Total ($)": f"${total_profit_lucid:,.2f}"},
-        {"Concepto": "MÁXIMO STOP EXNESS", "Monto ($)": f"${max_stop_loss:,.2f}", "Trades": f"{num_trades_loss} TRADES", "Subtotal ($)": f"${subtotal_loss:,.2f}", "Resultado": "TOTAL LOSS EXNESS (Cobertura)", "Total ($)": f"${total_loss_exness:,.2f}"}
+        {"Concepto": "MÁXIMO STOP EXNESS", "Monto ($)": f"${max_stop_loss:,.2f}", "Trades": f"{num_trades_loss} TRADES", "Subtotal ($)": f"${subtotal_profit:,.2f}", "Resultado": "TOTAL LOSS EXNESS (Cobertura)", "Total ($)": f"${total_loss_exness:,.2f}"}
     ])
     st.dataframe(df_colchon_show, use_container_width=True, hide_index=True)
 
-    # --- PANEL RESUMEN LÍQUIDO DEL TRADER ---
     st.markdown("### 💰 Reparto Final & Cobertura Neta")
     
     r1, r2, r3, r4 = st.columns(4)
@@ -506,50 +390,20 @@ with tab_bal:
 with tab_config:
     st.subheader("⚙️ Ajustes del Sistema & Personalización")
     
-    st.markdown("### 🎨 Personalización de Colores de PnL")
-    col_c1, col_c2 = st.columns(2)
-    nuevo_col_win = col_c1.color_picker("Color para Días Ganadores", value=color_ganancia)
-    nuevo_col_loss = col_c2.color_picker("Color para Días Perdedores", value=color_perdida)
-    
-    if st.button("💾 Guardar Colores"):
-        c.execute("UPDATE configuracion SET color_ganancia = ?, color_perdida = ? WHERE id = 1", (nuevo_col_win, nuevo_col_loss))
-        conn.commit()
-        st.success("Colores actualizados correctamente.")
-        st.rerun()
-
-    st.divider()
-    st.markdown("### 💰 Capital Inicial")
-    nuevo_capital = st.number_input("Configurar Capital de la Cuenta ($)", value=float(capital_inicial), step=1000.0)
-    if st.button("Guardar Capital"):
-        c.execute("UPDATE configuracion SET capital_inicial = ? WHERE id = 1", (nuevo_capital,))
-        conn.commit()
-        st.success("Capital actualizado.")
-        st.rerun()
-
-    st.divider()
-    st.markdown("### 🛠️ Editar Reglas del Checklist")
-    
     if st.button("🔄 Restablecer Confirmaciones por Defecto"):
-        c.execute("DELETE FROM checklist_items")
-        for r in reglas_defecto:
-            c.execute("INSERT INTO checklist_items (texto) VALUES (?)", (r,))
-        conn.commit()
+        st.session_state["checklist_custom"] = REGLAS_DEFECTO.copy()
         st.success("Confirmaciones restablecidas a la lista original.")
         st.rerun()
 
     nueva_regla = st.text_input("Nueva confirmación:")
     if st.button("➕ Agregar Confirmación"):
         if nueva_regla.strip():
-            c.execute("INSERT INTO checklist_items (texto) VALUES (?)", (nueva_regla.strip(),))
-            conn.commit()
+            st.session_state["checklist_custom"].append(nueva_regla.strip())
             st.rerun()
 
-    c.execute("SELECT id, texto FROM checklist_items")
-    items_actuales = c.fetchall()
-    for item_id, item_texto in items_actuales:
+    for idx, item_texto in enumerate(st.session_state["checklist_custom"]):
         col_del1, col_del2 = st.columns([0.8, 0.2])
         col_del1.caption(f"• {item_texto}")
-        if col_del2.button("❌", key=f"del_cfg_{item_id}"):
-            c.execute("DELETE FROM checklist_items WHERE id = ?", (item_id,))
-            conn.commit()
+        if col_del2.button("❌", key=f"del_cfg_{idx}"):
+            st.session_state["checklist_custom"].pop(idx)
             st.rerun()
