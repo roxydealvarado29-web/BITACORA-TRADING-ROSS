@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import requests
+import json
 import calendar
 from datetime import datetime, date
 
@@ -9,6 +11,9 @@ st.set_page_config(page_title="Trading Journal Pro", layout="wide", initial_side
 # ID de la hoja de Google Sheets de tu amiga
 SPREADSHEET_ID = "1Dst-Xpe9S8dquIzoLDaMUxGUHZx9yhHOufTRgnkp_PI"
 CSV_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/export?format=csv"
+
+# PEGA AQUÍ LA URL DE APPS SCRIPT DE TU AMIGA (debe ir dentro de las comillas)
+WEB_APP_URL = "https://script.google.com/macros/s/TU_URL_DE_APPS_SCRIPT_AMIGA/exec"
 
 # Configuración de la cuenta por defecto
 CAPITAL_INICIAL = 50000.0
@@ -28,12 +33,11 @@ REGLAS_DEFECTO = [
     "NO 🥺​"
 ]
 
-# Inicializar sesión local si no existe
 if "checklist_custom" not in st.session_state:
     st.session_state["checklist_custom"] = REGLAS_DEFECTO.copy()
 
-# Función para cargar datos desde Google Sheets
-@st.cache_data(ttl=5)
+# Cargar datos desde Google Sheets
+@st.cache_data(ttl=2)
 def cargar_datos_sheets():
     try:
         df = pd.read_csv(CSV_URL)
@@ -204,8 +208,29 @@ with tab_reg:
 
         notas_input = st.text_area("Notas / Lecciones del día")
 
-        st.info("💡 Abre el enlace de tu hoja para agregar o editar tus registros:")
-        st.markdown(f"[👉 Abrir Google Sheets de tu Bitácora](https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit)")
+        if st.button("💾 Guardar en Bitácora", use_container_width=True, type="primary"):
+            confirmaciones_str = " | ".join(respuestas_checklist)
+            nuevo_id = len(df_all) + 1
+            
+            payload = {
+                "action": "add",
+                "id": nuevo_id,
+                "fecha": fecha_str,
+                "pnl": pnl_input,
+                "num_trades": trades_count,
+                "confirmaciones": confirmaciones_str,
+                "foto_antes": url_antes.strip(),
+                "foto_despues": url_despues.strip(),
+                "notas": notas_input
+            }
+            
+            try:
+                res = requests.post(WEB_APP_URL, data=json.dumps(payload))
+                st.success("✅ ¡Trade guardado de forma permanente en Google Sheets!")
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error al enviar datos: {e}")
 
     with c_insp:
         st.subheader("🔍 Detalle e Inspección de Trades")
@@ -222,7 +247,20 @@ with tab_reg:
                 trade_id = r.get('id', idx + 1)
                 pnl_val = r.get('pnl', 0.0)
                 
-                st.markdown(f"### Trade #{trade_id} - PnL: **${pnl_val:,.2f}**")
+                col_head1, col_head2 = st.columns([0.7, 0.3])
+                col_head1.markdown(f"### Trade #{trade_id} - PnL: **${pnl_val:,.2f}**")
+                
+                # BOTÓN ROJO PARA ELIMINAR REGISTROS
+                if col_head2.button("🗑️ Eliminar Trade", key=f"btn_del_trade_{trade_id}"):
+                    payload_del = {"action": "delete", "id": int(trade_id)}
+                    try:
+                        res_del = requests.post(WEB_APP_URL, data=json.dumps(payload_del))
+                        st.success(f"🗑️ Trade #{trade_id} eliminado de Google Sheets.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error al eliminar: {e}")
+
                 st.write(f"**Número de trades:** {r.get('num_trades', 1)}")
                 
                 conf_str = str(r.get('confirmaciones', ''))
